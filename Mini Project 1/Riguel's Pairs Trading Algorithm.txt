@@ -1,0 +1,121 @@
+from scipy import stats
+import statsmodels.tsa.stattools as ts
+import math
+import numpy as np
+import pandas as pd
+
+def initialize(context):
+    
+    context.stocks = [sid(2673),sid(40430)] # Ford & GM 
+    
+    set_commission(commission.PerShare(cost=0.03, min_trade_cost=None))
+    set_slippage(slippage.FixedSlippage(spread=0.00))
+    
+    # Use a custom function to schedule trades
+    schedule_function(func=trade,
+                      date_rule=date_rules.every_day(),
+                      time_rule=time_rules.market_open(hours=1)
+                     )
+    
+    # Initialize model parameters
+    context.initial_setup   = False
+    context.entry_amount    = 1000
+    context.entry_threshold = 1.5
+    context.exit_threshold  = 0.0
+    context.adf_threshold   = 0.1
+
+def handle_data(context, data):
+    pass
+
+def build_model(context, data):
+    # Get the data
+    prices = data.history(context.stocks, 'price', 10, '1m') 
+    
+    # Preform a linear regression on the pair
+    beta, alpha, r_value, p_value, std_err = stats.linregress(prices[context.stocks[0]],
+                                                              prices[context.stocks[1]])
+    
+    # use results to predict the second
+    # fund from the first
+    predicted = alpha + beta * prices[context.stocks[0]]
+    
+    # calculate spread
+    spread = prices[context.stocks[1]] - predicted
+    
+    # Preform ADF to see if the spread is stationary
+    adf_pvalue = ts.adfuller(spread)[1]
+    
+    # get the standard deviation 
+    spread_std = spread.std()
+    
+    # store relevant parameters to be used later
+    context.alpha = alpha
+    context.beta = beta
+    context.spread_std = spread_std
+    context.adf_pvalue = adf_pvalue
+    context.initial_setup = True
+
+def return_current(context, data):
+    # calculate current spread and z-score of spread
+    current_spread = (data.current(context.stocks[1],"price")) - (context.alpha + context.beta     * data.current(context.stocks[0],"price"))
+    current_z = current_spread / context.spread_std
+    return current_spread, current_z
+
+def trade(context, data):
+    
+    if context.initial_setup == False:
+        # the first time through we need to build the model here
+        build_model(context, data)
+
+    #To rebuld model as needed 
+    always_rebuild = False
+    if always_rebuild:
+        build_model(context, data)
+
+    
+    # calculate current relationship of pair
+    current_spread, current_z = return_current(context, data)
+    
+    # check sign of relationship (above or below equilibrium)
+    sign = math.copysign(1, current_z)
+    
+    # time to exit?
+    if len(context.portfolio.positions) > 0 and np.any(sign != context.entry_sign or
+                                                       abs(current_z) < context.exit_threshold):
+        # if we get here we were in a trade and the pair has come back
+        # to equilibrium.
+        order_target_percent(context.stocks[0], 0)
+        order_target_percent(context.stocks[1], 0)
+    
+    # look to enter a trade
+    if len(context.portfolio.positions) == 0:
+        
+        
+        if always_rebuild == False:
+            build_model(context, data)
+            current_spread, current_z = return_current(context, data)
+            # check to see if we are above or below equilibrium
+            sign = math.copysign(1, current_z)
+        
+        # cointegrated & spread is big enough
+        if (context.adf_pvalue < context.adf_threshold and     
+            abs(current_z) >= context.entry_threshold):        
+            
+            # record relationship at start of position
+            context.entry_sign = sign
+            
+           
+            shares_pair0 = round(context.entry_amount / data.current(context.stocks[0],"price"))
+            shares_pair1 = round(context.entry_amount / data.current(context.stocks[1],"price"))
+            
+            order(context.stocks[0],      sign * shares_pair0)
+            order(context.stocks[1], -1 * sign * shares_pair1)
+    
+    #Recored values 
+    record(p_value = context.adf_pvalue)
+    #record(spread_z = current_z)
+    record(beta = context.beta)
+    record(alpha = context.alpha)
+    # record(ref = data[context.pair[0]].price, follow = data[context.pair[1]].price)
+        
+                                                 
