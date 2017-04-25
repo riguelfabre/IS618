@@ -1,0 +1,49 @@
+from sklearn.ensemble import RandomForestClassifier
+from collections import deque
+import numpy as np
+
+def initialize(context):
+    # United Airlines
+    context.security = sid(28051)
+    # Amount of prior bars to study
+    context.window_length = 10 
+    
+    # Using a random forest classifier
+    context.classifier = RandomForestClassifier() 
+    
+    # Stores recent prices
+    context.recent_prices = deque(maxlen=context.window_length+2) 
+    context.X = deque(maxlen=500) 
+    context.Y = deque(maxlen=500) 
+    
+    # prediction variable
+    context.prediction = 0 
+    
+    schedule_function(rebalance, date_rules.every_day(), time_rules.market_close(minutes=5))
+    schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
+    
+def rebalance(context, data):
+    # Update recent prices
+    context.recent_prices.append(data.current(context.security, 'price'))
+    # If there's enough recent price data
+    if len(context.recent_prices) == context.window_length+2: 
+        
+        # Make a list of 1's and 0's, 1 when the price increased from the prior bar
+        changes = np.diff(context.recent_prices) > 0
+        
+        context.X.append(changes[:-1]) # Add independent variables, the prior changes
+        context.Y.append(changes[-1]) # Add dependent variable, the final change
+        
+        # Make sure enough data points to make a good model
+        if len(context.Y) >= 100:
+            
+            # Generate the model
+            context.classifier.fit(context.X, context.Y) 
+            
+            context.prediction = context.classifier.predict(changes[1:]) 
+            
+            # If prediction = 1, buy all shares affordable, if 0 sell all shares
+            order_target_percent(context.security, context.prediction)
+                
+def record_vars(context, data):
+    record(prediction=int(context.prediction))  
