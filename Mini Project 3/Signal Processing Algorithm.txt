@@ -1,0 +1,76 @@
+import numpy as np
+
+ 
+def initialize(context):
+    context.ewa = sid(4974)
+    context.ewc = sid(11673)
+    
+    # Delta 
+    context.delta = 0.0001  
+    
+    context.Vw = context.delta / (1 - context.delta) * np.eye(2)
+    
+    context.Ve = 0.001
+    # Beta
+    context.beta = np.zeros(2)
+    # Predicted error of the system
+    context.P = np.zeros((2, 2))
+    # Estimate of the measureement error covariance
+    context.R = None  
+    # Position
+    context.pos = None  
+    
+    # Set comission and slippage rules
+    set_slippage(slippage.FixedSlippage(spread=0.25))
+    set_commission(commission.PerShare(0.15))
+
+    # Schedule Trade for 5 minutes before market close, once a day
+    schedule_function(handle_data, date_rules.every_day(), time_rules.market_close(minutes=5))
+   
+ 
+def handle_data(context, data):  
+    x = np.asarray([data.current(context.ewa, 'price'), 1.0]).reshape((1, 2))
+    y = data.current(context.ewc, 'price')
+       
+    # Update Kalman filter with latest price
+    if context.R is not None:
+        context.R = context.P + context.Vw
+    else:
+        context.R = np.zeros((2, 2))
+     
+    yhat = x.dot(context.beta)  # Initial prediction
+   
+    Q = x.dot(context.R).dot(x.T) + context.Ve  # Estimate of the process error
+    sqrt_Q = np.sqrt(Q)  # Establish signal bands
+    e = y - yhat  # Estimator
+    K = context.R.dot(x.T) / Q
+    context.beta = context.beta + K.flatten() * e  # Calculate beta
+    context.P = context.R - K * x.dot(context.R)  # Estimate error
+
+    # Record data
+    record(Beta=context.beta[0], Alpha=context.beta[1]) # Beta and Alpha (difference between actual and expected)
+    if e < 5:
+        record(Spread=float(e), Q_Upper=float(sqrt_Q), Q_Lower=float(-sqrt_Q))
+   
+    # Carry out the trades
+    # Close positions
+    if context.pos is not None:
+        if context.pos == 'long' and e > -sqrt_Q:
+            order_target_percent(context.ewa, 1)
+            order_target_percent(context.ewc, 1)
+            context.pos = None
+        elif context.pos == 'short' and e < sqrt_Q:
+            order_target_percent(context.ewa, 1)
+            order_target_percent(context.ewc, 1)
+            context.pos = None
+       
+    # Open positions
+    if context.pos is None:
+        if e < -sqrt_Q:
+            order(context.ewc,1)
+            order(context.ewa, -1 * context.beta[0])
+            context.pos = 'long'
+        elif e > sqrt_Q:
+            order(context.ewc,-1)
+            order(context.ewa, 1 * context.beta[0])
+            context.pos = 'short'
